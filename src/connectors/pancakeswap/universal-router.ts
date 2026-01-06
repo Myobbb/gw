@@ -98,26 +98,20 @@ export class UniversalRouterService {
 
     const protocols = options.protocols || [PoolType.V2, PoolType.V3];
     logger.info(`[UniversalRouter] Protocols to check: ${protocols.join(', ')}`);
-    const allPools = [];
 
     // Try to find routes through each protocol
     let directV3Trade: V3Trade<Currency, Currency, TradeType> | null = null;
+    let directV2Trade: V2Trade<Currency, Currency, TradeType> | null = null;
 
+    // First try V3 (preferred for lower fees and better execution)
     if (protocols.includes(PoolType.V3)) {
       logger.info(`[UniversalRouter] Searching for V3 routes...`);
       try {
-        const v3Trade = await this.findV3Route(tokenIn, tokenOut, amount, tradeType);
-        if (v3Trade) {
+        directV3Trade = await this.findV3Route(tokenIn, tokenOut, amount, tradeType);
+        if (directV3Trade) {
           logger.info(
-            `[UniversalRouter] Found V3 route: ${v3Trade.inputAmount.toExact()} -> ${v3Trade.outputAmount.toExact()}`,
+            `[UniversalRouter] Found V3 route: ${directV3Trade.inputAmount.toExact()} -> ${directV3Trade.outputAmount.toExact()}`,
           );
-          directV3Trade = v3Trade; // Store for fallback if SmartRouter fails
-          for (const swap of v3Trade.swaps) {
-            for (const pool of swap.route.pools as unknown as Pool[]) {
-              pool.type = PoolType.V3;
-              allPools.push(pool);
-            }
-          }
         } else {
           logger.info(`[UniversalRouter] No V3 route found`);
         }
@@ -126,15 +120,64 @@ export class UniversalRouterService {
       }
     }
 
+    // If V3 route found, use it directly (skip V2 lookup and SmartRouter)
+    if (directV3Trade) {
+      logger.info(`[UniversalRouter] Using V3 trade directly (optimized path)`);
+
+      // Build swap parameters using V3 SDK's SwapRouter
+      const { calldata, value } = V3SwapRouter.swapCallParameters(directV3Trade, {
+        slippageTolerance: options.slippageTolerance,
+        deadline: options.deadline,
+        recipient: options.recipient as Address,
+      });
+
+      // Calculate route path
+      const route = [tokenIn.symbol || tokenIn.address, tokenOut.symbol || tokenOut.address];
+      const routePath = route.join(' -> ');
+
+      logger.info(`[UniversalRouter] V3 quote complete: ${routePath}`);
+      logger.info(`[UniversalRouter] Input: ${directV3Trade.inputAmount.toExact()} ${directV3Trade.inputAmount.currency.symbol}`);
+      logger.info(`[UniversalRouter] Output: ${directV3Trade.outputAmount.toExact()} ${directV3Trade.outputAmount.currency.symbol}`);
+
+      return {
+        trade: {
+          tradeType,
+          inputAmount: directV3Trade.inputAmount,
+          outputAmount: directV3Trade.outputAmount,
+          gasEstimate: BigInt(300000),
+          routes: directV3Trade.swaps.map(swap => ({
+            ...swap,
+            inputAmount: swap.inputAmount,
+            outputAmount: swap.outputAmount,
+          })),
+        } as unknown as SmartRouterTrade<TradeType>,
+        route,
+        routePath,
+        priceImpact: parseFloat(directV3Trade.inputAmount.divide(directV3Trade.outputAmount).toSignificant(6)),
+        estimatedGasUsed: BigNumber.from(300000),
+        estimatedGasUsedQuoteToken: CurrencyAmount.fromRawAmount(tokenOut, '0'),
+        quote: directV3Trade.outputAmount,
+        quoteGasAdjusted: directV3Trade.outputAmount,
+        methodParameters: {
+          calldata,
+          value,
+          to: SMART_ROUTER_ADDRESSES[this.chainId],
+        },
+      };
+    }
+
+    // No V3 route found, try V2
+    const allPools = [];
+
     if (protocols.includes(PoolType.V2)) {
       logger.info(`[UniversalRouter] Searching for V2 routes...`);
       try {
-        const v2Trade = await this.findV2Route(tokenIn, tokenOut, amount, tradeType);
-        if (v2Trade) {
+        directV2Trade = await this.findV2Route(tokenIn, tokenOut, amount, tradeType);
+        if (directV2Trade) {
           logger.info(
-            `[UniversalRouter] Found V2 route: ${v2Trade.inputAmount.toExact()} -> ${v2Trade.outputAmount.toExact()}`,
+            `[UniversalRouter] Found V2 route: ${directV2Trade.inputAmount.toExact()} -> ${directV2Trade.outputAmount.toExact()}`,
           );
-          for (const pair of v2Trade.route.pairs as unknown as Pool[]) {
+          for (const pair of directV2Trade.route.pairs as unknown as Pool[]) {
             pair.type = PoolType.V2;
             allPools.push(pair);
           }
