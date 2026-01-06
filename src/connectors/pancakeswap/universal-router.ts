@@ -207,12 +207,13 @@ export class UniversalRouterService {
             tradeType,
             inputAmount: directV3Trade.inputAmount,
             outputAmount: directV3Trade.outputAmount,
+            gasEstimate: BigInt(300000), // Required by SmartRouterTrade interface
             routes: directV3Trade.swaps.map(swap => ({
               ...swap,
               inputAmount: swap.inputAmount,
               outputAmount: swap.outputAmount,
             })),
-          } as SmartRouterTrade<TradeType>,
+          } as unknown as SmartRouterTrade<TradeType>,
           route,
           routePath,
           priceImpact: parseFloat(directV3Trade.inputAmount.divide(directV3Trade.outputAmount).toSignificant(6)),
