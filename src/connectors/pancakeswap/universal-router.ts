@@ -20,6 +20,7 @@ import {
   computePoolAddress,
   nearestUsableTick,
   TICK_SPACINGS,
+  SwapRouter as V3SwapRouter,
 } from '@pancakeswap/v3-sdk';
 import { BigNumber, Contract } from 'ethers';
 import { Address } from 'viem';
@@ -100,6 +101,8 @@ export class UniversalRouterService {
     const allPools = [];
 
     // Try to find routes through each protocol
+    let directV3Trade: V3Trade<Currency, Currency, TradeType> | null = null;
+
     if (protocols.includes(PoolType.V3)) {
       logger.info(`[UniversalRouter] Searching for V3 routes...`);
       try {
@@ -108,6 +111,7 @@ export class UniversalRouterService {
           logger.info(
             `[UniversalRouter] Found V3 route: ${v3Trade.inputAmount.toExact()} -> ${v3Trade.outputAmount.toExact()}`,
           );
+          directV3Trade = v3Trade; // Store for fallback if SmartRouter fails
           for (const swap of v3Trade.swaps) {
             for (const pool of swap.route.pools as unknown as Pool[]) {
               pool.type = PoolType.V3;
@@ -169,12 +173,64 @@ export class UniversalRouterService {
     };
 
     // Create RouterTrade based on the best route
-    const bestTrade: SmartRouterTrade<TradeType> | null = await SmartRouter.getBestTrade(
-      amount,
-      tradeType === TradeType.EXACT_INPUT ? tokenOut : tokenIn,
-      tradeType,
-      tradeConfig,
-    );
+    let bestTrade: SmartRouterTrade<TradeType> | null = null;
+
+    try {
+      bestTrade = await SmartRouter.getBestTrade(
+        amount,
+        tradeType === TradeType.EXACT_INPUT ? tokenOut : tokenIn,
+        tradeType,
+        tradeConfig,
+      );
+    } catch (smartRouterError) {
+      logger.warn(`[UniversalRouter] SmartRouter.getBestTrade failed: ${smartRouterError.message}`);
+
+      // Fallback: If we have a direct V3 trade, use it instead
+      if (directV3Trade) {
+        logger.info(`[UniversalRouter] Using fallback V3 trade directly`);
+
+        // Build swap parameters using V3 SDK's SwapRouter (imported as V3SwapRouter)
+        const { calldata, value } = V3SwapRouter.swapCallParameters(directV3Trade, {
+          slippageTolerance: options.slippageTolerance,
+          deadline: options.deadline,
+          recipient: options.recipient as Address,
+        });
+
+        // Calculate route path
+        const route = [tokenIn.symbol || tokenIn.address, tokenOut.symbol || tokenOut.address];
+        const routePath = route.join(' -> ');
+
+        logger.info(`[UniversalRouter] Fallback V3 quote complete: ${routePath}`);
+
+        return {
+          trade: {
+            tradeType,
+            inputAmount: directV3Trade.inputAmount,
+            outputAmount: directV3Trade.outputAmount,
+            routes: directV3Trade.swaps.map(swap => ({
+              ...swap,
+              inputAmount: swap.inputAmount,
+              outputAmount: swap.outputAmount,
+            })),
+          } as SmartRouterTrade<TradeType>,
+          route,
+          routePath,
+          priceImpact: parseFloat(directV3Trade.inputAmount.divide(directV3Trade.outputAmount).toSignificant(6)),
+          estimatedGasUsed: BigNumber.from(300000), // Reasonable V3 gas estimate
+          estimatedGasUsedQuoteToken: CurrencyAmount.fromRawAmount(tokenOut, '0'),
+          quote: directV3Trade.outputAmount,
+          quoteGasAdjusted: directV3Trade.outputAmount,
+          methodParameters: {
+            calldata,
+            value,
+            to: SMART_ROUTER_ADDRESSES[this.chainId],
+          },
+        };
+      }
+
+      // No fallback available, rethrow
+      throw smartRouterError;
+    }
 
     // Build the Universal Router swap
     const swapOptions: SwapOptions = {

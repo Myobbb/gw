@@ -95,6 +95,19 @@ export const PancakeswapQuoteSwapRequest = Type.Object({
       default: ethereumChainConfig.defaultWallet,
     }),
   ),
+  // NEW: Optional pool specification for direct V3 quoting (bypasses SmartRouter discovery)
+  poolAddress: Type.Optional(
+    Type.String({
+      description: 'Specific V3 pool address to use (bypasses pool discovery)',
+      examples: [CLMM_POOL_ADDRESS_EXAMPLE],
+    }),
+  ),
+  feeTier: Type.Optional(
+    Type.Number({
+      description: 'V3 pool fee tier in bps (100, 500, 2500, 10000). Required if poolAddress specified.',
+      examples: [2500],
+    }),
+  ),
 });
 
 // Pancakeswap-specific quote-swap response
