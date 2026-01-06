@@ -42,7 +42,7 @@ This file provides guidance to AI coding assistants when working with code in th
 - Chain routes: `/chains/{chain}/{operation}`
   - Examples: `/chains/ethereum/balances`, `/chains/solana/tokens`
 - Connector routes: `/connectors/{dex}/{type}/{operation}`
-  - Router: `/connectors/jupiter/router/quote`, `/connectors/0x/router/swap`
+  - Router: `/connectors/jupiter/router/quote`, `/connectors/0x/router/swap`, `/connectors/pancakeswap/router/batch-quote`
   - AMM: `/connectors/raydium/amm/addLiquidity`, `/connectors/uniswap/amm/poolInfo`
   - CLMM: `/connectors/meteora/clmm/openPosition`, `/connectors/uniswap/clmm/collectFees`
 - Config routes: `/config/*`
@@ -273,6 +273,58 @@ node scripts/test-helius-live.js
 6. Add `rpcProvider` enum to network schema
 7. Create live integration test script
 8. Document configuration and usage
+
+## Batch Quote (Multicall) Support
+
+Gateway supports fetching multiple swap quotes in a single RPC call using the Multicall3 contract. This significantly reduces latency when probing multiple price points for dynamic order sizing.
+
+### Endpoint
+`POST /connectors/pancakeswap/router/batch-quote`
+
+### Request Example
+```json
+{
+  "network": "bsc",
+  "quotes": [
+    { "baseToken": "WBNB", "quoteToken": "USDT", "amount": 1, "side": "SELL", "poolType": "v3" },
+    { "baseToken": "WBNB", "quoteToken": "USDT", "amount": 5, "side": "SELL", "poolType": "v3" },
+    { "baseToken": "WBNB", "quoteToken": "USDT", "amount": 10, "side": "SELL", "poolType": "v3" },
+    { "baseToken": "WBNB", "quoteToken": "USDT", "amount": 50, "side": "SELL", "poolType": "v2" }
+  ]
+}
+```
+
+### Response Example
+```json
+{
+  "network": "bsc",
+  "totalQuotes": 4,
+  "successCount": 4,
+  "failedCount": 0,
+  "quotes": [
+    { "index": 0, "success": true, "baseToken": "WBNB", "quoteToken": "USDT", "amountIn": 1, "amountOut": 650.25, "price": 650.25, "poolType": "v3" },
+    { "index": 1, "success": true, "baseToken": "WBNB", "quoteToken": "USDT", "amountIn": 5, "amountOut": 3245.10, "price": 649.02, "poolType": "v3" },
+    { "index": 2, "success": true, "baseToken": "WBNB", "quoteToken": "USDT", "amountIn": 10, "amountOut": 6480.50, "price": 648.05, "poolType": "v3" },
+    { "index": 3, "success": true, "baseToken": "WBNB", "quoteToken": "USDT", "amountIn": 50, "amountOut": 32100.00, "price": 642.00, "poolType": "v2" }
+  ]
+}
+```
+
+### Parameters
+- `network`: Network name (e.g., `bsc`, `mainnet`, `arbitrum`)
+- `quotes`: Array of quote requests (max 50)
+  - `baseToken`: Base token symbol or address
+  - `quoteToken`: Quote token symbol or address
+  - `amount`: Amount to quote
+  - `side`: `BUY` or `SELL`
+  - `poolType`: `v2` or `v3` (optional, defaults to `v3`)
+  - `fee`: V3 fee tier in bps: 100, 500, 2500, 10000 (optional, defaults to 2500)
+
+### Implementation Details
+- Uses **Multicall3** contract (`0xcA11bde05977b3631167028862bE2a173976CA11`) deployed on all EVM chains
+- V2 quotes use `getAmountsOut` / `getAmountsIn` on the V2 Router
+- V3 quotes use `quoteExactInputSingle` / `quoteExactOutputSingle` on the Quoter V2 contract
+- Individual quote failures don't affect other quotes in the batch
 
 ## Hummingbot Gateway Endpoint Standardization
 - This repo standardized DEX and chain endpoints that are used by Hummingbot strategies. See this branch for the matching code, especially the Gateway connector classes https://github.com/hummingbot/hummingbot/tree/development
